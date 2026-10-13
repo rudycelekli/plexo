@@ -1,10 +1,15 @@
-import copy,unittest,json,pathlib,tempfile,hashlib,os,subprocess,shutil,importlib.util
+import copy,unittest,json,pathlib,tempfile,hashlib,os,subprocess,shutil,importlib.util,re
 from compare import load,BASE
-from compare import cases,check_windows_cases
+from native import NEW
+from compare import cases,check_windows_cases,listing_filename
 
 def report(status='passed'):
     return {'suites':[{'title':'e2e/download.spec.ts','specs':[{'title':'actual case','file':'e2e/download.spec.ts','tests':[{'projectName':'','annotations':[],'results':[{'status':status,'errors':[]}]}]}]}]}
 class Controls(unittest.TestCase):
+    def test_baseline_regression_list_name(self):
+        self.assertEqual(listing_filename('regressions'),'regression-list.json')
+        self.assertNotEqual(listing_filename('regressions'),'regressions-list.json')
+        self.assertEqual(listing_filename('smoke'),'smoke-list.json')
     def test_actual_pass(self):self.assertEqual(next(iter(cases(report()).values()))['status'],'passed')
     def test_missing_result(self):
         r=report();r['suites'][0]['specs'][0]['tests'][0]['results']=[]
@@ -92,6 +97,40 @@ class ReceiptControls(unittest.TestCase):
             os.environ['GITHUB_SHA']=git('rev-parse','HEAD');self.r['harness_head']=os.environ['GITHUB_SHA'];self.r['harness_tree']=git('rev-parse','HEAD^{tree}')
             module.bind_harness_context();self.assertEqual(os.environ['PLEXO_EXPECTED_WORKFLOW_SHA256'],hashlib.sha256(workflow.read_bytes()).hexdigest())
             self.write();module.load(self.d)
+            # Synthetic receipt contract; real Git deployment, canonical collector filenames.
+            # This unit control is not a native app qualification result.
+            self.make_linux_receipt();self.write();_,parsed=module.load(self.d)
+            rows=parsed('regressions');self.assertEqual(len(rows),7)
+            list_file=self.d/'regression-list.json';saved=list_file.read_bytes();list_file.unlink()
+            with self.assertRaises(FileNotFoundError):parsed('regressions')
+            (self.d/'regressions-list.json').write_bytes(saved)
+            with self.assertRaises(FileNotFoundError):parsed('regressions')
+            (self.d/'regressions-list.json').unlink();list_file.write_bytes(saved)
+            self.assertEqual(len(parsed('regressions')),7)
+    def make_linux_receipt(self):
+        for name in ['torrent-list.json','torrent.json','sparse-list.json','sparse.json']:(self.d/name).unlink()
+        root='/home/runner/work/plexo/plexo/source';python='/opt/python/bin/python'
+        self.r.update(platform='Linux',machine='x86_64',source_root=root,python_executable=python)
+        args=[('python-version',[python,'--version']),('node-version',['node','--version']),('npm-version',['npm','--version']),('install-static',['npm','ci','--ignore-scripts'])]
+        args += [(n,['npm','run',a]) for n,a in [('lint','lint'),('typecheck','typecheck'),('format','format:check')]]
+        args += [('install-native',['npm','ci']),('build',['npm','run','build'])]
+        display=['xvfb-run','--auto-servernum','--server-args=-screen 0 1280x1024x24 -noreset']
+        reporter=['--reporter=list,html,json'];grep='|'.join(map(re.escape,NEW))
+        args += [('smoke-list',['npx','playwright','test','--grep','@smoke','--list',*reporter]),('smoke',[*display,'npx','playwright','test','--grep','@smoke',*reporter]),('package',['npx','electron-builder','--linux','dir','--publish','never']),('offline-receipt',[*display,'npx','playwright','test','e2e/offlineReceipt.spec.ts',*reporter]),('regression-list',['npx','playwright','test','e2e/download.spec.ts','--grep',grep,'--list',*reporter]),('regressions',[*display,'npx','playwright','test','e2e/download.spec.ts','--grep',grep,*reporter])]
+        commands=[]
+        for name,argv in args:
+            b=(('Python 3.13.9' if name=='python-version' else 'v22.19.0' if name=='node-version' else '10.9.3' if name=='npm-version' else '')+'\n').encode();(self.d/(name+'.log')).write_bytes(b)
+            commands.append({'name':name,'argv':argv,'cwd':root,'exit':1 if name=='regressions' else 0,'start_utc':'2026-10-13T00:00:00+00:00','end_utc':'2026-10-13T00:00:01+00:00','start_monotonic':1,'end_monotonic':2,'raw_sha256':hashlib.sha256(b).hexdigest()})
+        self.r['commands']=commands;reports={}
+        for name in ['smoke-list.json','smoke.json','offline-receipt.json','offline-download.json','regression-list.json','regressions.json']:
+            data=report()
+            if name.startswith('regression'):
+                data['suites'][0]['specs']=[{**copy.deepcopy(data['suites'][0]['specs'][0]),'title':title} for title in NEW]
+            b=json.dumps(data).encode()
+            if name in ['regression-list.json','regressions.json'] and os.environ.get('PLEXO_CONTROL_RAW_PAIR_DIR'):
+                b=(pathlib.Path(os.environ['PLEXO_CONTROL_RAW_PAIR_DIR'])/name).read_bytes()
+            (self.d/name).write_bytes(b);reports[name]=hashlib.sha256(b).hexdigest()
+        self.r['report_hashes']=reports
     def test_wrong_cwd(self):self.r['commands'][2]['cwd']='D:/other/source';self.rejected()
     def test_wrong_source_root(self):self.r['source_root']='relative/source';self.rejected()
     def test_wrong_head(self):self.r['head']='f'*40;self.rejected()

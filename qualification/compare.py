@@ -21,6 +21,9 @@ def cases(report,listing=False):
     assert out
     return out
 
+def listing_filename(name):
+    return 'regression-list.json' if name=='regressions' else name+'-list.json'
+
 def load(d):
     r=json.loads((d/'receipt.json').read_text());assert r['harness_hashes']=={f:hashlib.sha256((pathlib.Path(__file__).parent/f).read_bytes()).hexdigest() for f in ['native.py','compare.py','expected-trees.json','offlineReceipt.spec.ts','test_compare.py']};assert r['status']=='RAW_COLLECTION_COMPLETE';assert r['head']==({'baseline':BASE,'fixed':FIXED}[r['phase']]);assert r['source_before']==r['source_after']
     assert r['platform'] in ['Linux','Windows']
@@ -69,7 +72,7 @@ def load(d):
     assert {f.name for f in d.glob('*.json') if f.name!='receipt.json'}==expected_reports
     for name,digest in r['report_hashes'].items():assert hashlib.sha256((d/name).read_bytes()).hexdigest()==digest,('report byte drift',name)
     def parsed(name):
-        listing=cases(json.loads((d/(name+'-list.json')).read_text()),True);actual=cases(json.loads((d/(name+'.json')).read_text()));assert listing.keys()==actual.keys();return actual
+        listing=cases(json.loads((d/listing_filename(name)).read_text()),True);actual=cases(json.loads((d/(name+'.json')).read_text()));assert listing.keys()==actual.keys();return actual
     return r,parsed
 
 def check_windows_cases(rows):
