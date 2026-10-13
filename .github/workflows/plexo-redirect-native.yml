@@ -1,0 +1,66 @@
+name: Plexo probe redirect native qualification
+on:
+  workflow_dispatch:
+  push:
+    branches: [qualification/plexo-redirect-native]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'rudycelekli/plexo' && github.event.repository.fork == true && github.event.repository.private == false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        phase: [baseline, fixed]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Preserve exact Git bytes on Windows
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: harness
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: source
+          ref: ${{ matrix.phase == 'baseline' && '5366a8c01c68b53a1d5fcc04cdad41e53444d37f' || 'e5c520d12b9bac0a14ba8edeb2ae3b978d79e0ae' }}
+          persist-credentials: false
+      - name: Load immutable test blob for baseline control
+        working-directory: source
+        run: git fetch --no-tags https://github.com/rudycelekli/plexo.git e5c520d12b9bac0a14ba8edeb2ae3b978d79e0ae
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.19.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: 3.13.9
+      - name: Actual native gates and raw evidence
+        shell: bash
+        run: python harness/qualification/native.py --source source --proof proof --phase ${{ matrix.phase }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ${{ runner.os }}-${{ matrix.phase }}
+          path: proof
+          retention-days: 1
+          compression-level: 9
+  compare:
+    if: always() && github.repository == 'rudycelekli/plexo' && github.event.repository.fork == true && github.event.repository.private == false
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: artifacts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: 3.13.9
+      - name: Strict evidence comparison
+        run: python qualification/compare.py artifacts
